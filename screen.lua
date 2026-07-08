@@ -23,7 +23,7 @@ local Size            = require("ui/size")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
-local _               = require("gettext")
+local _               = require("i18n")
 local T               = require("ffi/util").template
 
 local ScreenBase            = lrequire_common("screen_base")
@@ -45,7 +45,7 @@ Rules:
 • Cells without a number have no constraint.
 • The loop must be a single continuous closed curve — it cannot branch or cross itself, and there can be no loose ends.
 
-Tap a grid edge to toggle it between drawn and not drawn.
+Tap a grid edge to cycle: Unknown → Line → Cross → Unknown. Hold to mark as Cross (confirmed unused).
 ]])
 
 local GAME_RULES_FR = [[
@@ -58,7 +58,7 @@ Règles :
 • Les cases sans chiffre n'ont aucune contrainte.
 • La boucle doit être une courbe fermée continue unique — elle ne peut pas se ramifier ni se croiser, et il ne peut pas y avoir d'extrémités libres.
 
-Appuyez sur un bord de grille pour basculer entre tracé et non tracé.
+Appuyez sur un bord de grille pour cycler : Inconnu → Ligne → Croix → Inconnu. Restez appuyé pour marquer comme Croix (non utilisé confirmé).
 ]]
 
 local SlitherlinkScreen = ScreenBase:extend{}
@@ -130,7 +130,6 @@ function SlitherlinkScreen:buildLayout()
                 { text = _("Check"), callback = function() self:onCheck() end },
                 { id = "undo_button", text = _("Undo"),
                   callback = function() self:onUndo() end },
-                { text = _("Rules"), callback = function() self:showRulesHint() end },
             },
         },
     }
@@ -153,18 +152,13 @@ function SlitherlinkScreen:buildLayout()
             right_panel,
         }
     else
-        self.layout = VerticalGroup:new{
+        local content = VerticalGroup:new{
             align = "center",
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             board_frame,
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
         }
+        self:buildPortraitLayout(top_buttons, content, bottom_buttons)
     end
     self[1] = self.layout
     self:updateStatus()
@@ -241,17 +235,6 @@ function SlitherlinkScreen:toggleSolution()
         self.reveal_button:setText(self:getRevealButtonText(), self.reveal_button.width)
     end
     self:updateStatus()
-end
-
-function SlitherlinkScreen:showRulesHint()
-    self:showMessage(_(
-        "Slitherlink rules:\n" ..
-        "Draw a single closed loop along grid edges.\n" ..
-        "Each number shows how many of its 4 edges are part of the loop.\n" ..
-        "Unnumbered cells may have any count.\n\n" ..
-        "Tap: cycle Unknown \xE2\x86\x92 Line \xE2\x86\x92 Cross \xE2\x86\x92 Unknown\n" ..
-        "Hold: set Cross (confirmed unused)"
-    ), 10)
 end
 
 function SlitherlinkScreen:openGridMenu()
