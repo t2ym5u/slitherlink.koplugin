@@ -163,6 +163,237 @@ local function tryGenerate(n)
 end
 
 -- ---------------------------------------------------------------------------
+-- Uniqueness counter. Win-check is a literal comparison to the stored
+-- solution (not rule-based). Uniqueness means: given the revealed clue
+-- numbers, is there only one edge assignment forming a single simple loop
+-- (every dot has degree 0 or 2, no separate sub-loops) consistent with
+-- them? Backtracking over edges (line/not-line) with two propagation
+-- rules: clue forcing (a cell's decided-line-count hitting its clue value
+-- forces the rest) and vertex degree forcing (a dot's final degree must
+-- be 0 or 2, so its last undecided incident edge is forced once that's
+-- the only way to avoid ending at degree 1). Full validation (incl. no
+-- separate sub-loops) is only checked once every edge is decided -- an
+-- earlier attempt at incremental "no premature sub-loop" pruning via
+-- union-find was unsound (compared against the count of ALL decided
+-- edges, line or not, which is essentially never reached until long
+-- after the real loop closes, since unrelated not-line edges elsewhere
+-- are usually still undecided -- it rejected the true solution's own
+-- closing edge nearly always, caught via the standard sanity check).
+-- Dropped in favor of this simpler, definitely-sound version; the clue
+-- and vertex propagation alone turned out to be strong enough to stay
+-- fast (sub-100ms even at n=20) without it.
+-- ---------------------------------------------------------------------------
+
+local function countSolutions(clues, n, limit, node_budget)
+    local h = {}
+    local v = {}
+    for r = 1, n+1 do h[r] = {} end
+    for r = 1, n do v[r] = {} end
+
+    local edge_list = {}
+    for r = 1, n+1 do for c = 1, n do edge_list[#edge_list+1] = { kind="h", r=r, c=c } end end
+    for r = 1, n do for c = 1, n+1 do edge_list[#edge_list+1] = { kind="v", r=r, c=c } end end
+    local num_edges = #edge_list
+
+    local function getE(e)
+        if e.kind == "h" then return h[e.r][e.c] else return v[e.r][e.c] end
+    end
+    local function setE(e, val)
+        if e.kind == "h" then h[e.r][e.c] = val else v[e.r][e.c] = val end
+    end
+
+    local function cellEdges(r, c)
+        return {
+            { kind="h", r=r,   c=c },
+            { kind="h", r=r+1, c=c },
+            { kind="v", r=r,   c=c },
+            { kind="v", r=r,   c=c+1 },
+        }
+    end
+
+    local function vertexEdges(r, c)
+        local es = {}
+        if c <= n   then es[#es+1] = { kind="h", r=r,   c=c   } end
+        if c > 1    then es[#es+1] = { kind="h", r=r,   c=c-1 } end
+        if r <= n   then es[#es+1] = { kind="v", r=r,   c=c   } end
+        if r > 1    then es[#es+1] = { kind="v", r=r-1, c=c   } end
+        return es
+    end
+
+    local decided_count = 0
+    local solutions, nodes, exhausted = 0, 0, false
+
+    local function isSingleLoopFinal()
+        local total = 0
+        for r = 1, n+1 do for c = 1, n do if h[r][c] then total = total + 1 end end end
+        for r = 1, n do for c = 1, n+1 do if v[r][c] then total = total + 1 end end end
+        if total == 0 then return false end
+        for r = 1, n+1 do
+            for c = 1, n+1 do
+                local deg = 0
+                if c <= n and h[r][c] then deg = deg + 1 end
+                if c > 1 and h[r][c-1] then deg = deg + 1 end
+                if r <= n and v[r][c] then deg = deg + 1 end
+                if r > 1 and v[r-1][c] then deg = deg + 1 end
+                if deg ~= 0 and deg ~= 2 then return false end
+            end
+        end
+        local start_r, start_c
+        for r = 1, n+1 do for c = 1, n do if h[r][c] then start_r, start_c = r, c; goto found end end end
+        ::found::
+        if not start_r then return false end
+        local cur_r, cur_c = start_r, start_c
+        local prv_r, prv_c = start_r, start_c + 1
+        local steps = 0
+        repeat
+            local nx, ny
+            if cur_c <= n and h[cur_r][cur_c] then
+                local nr, nc = cur_r, cur_c+1
+                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
+            end
+            if not nx and cur_c > 1 and h[cur_r][cur_c-1] then
+                local nr, nc = cur_r, cur_c-1
+                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
+            end
+            if not nx and cur_r <= n and v[cur_r][cur_c] then
+                local nr, nc = cur_r+1, cur_c
+                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
+            end
+            if not nx and cur_r > 1 and v[cur_r-1][cur_c] then
+                local nr, nc = cur_r-1, cur_c
+                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
+            end
+            if not nx then return false end
+            prv_r, prv_c = cur_r, cur_c
+            cur_r, cur_c = nx, ny
+            steps = steps + 1
+        until (cur_r == start_r and cur_c == start_c)
+        return steps == total
+    end
+
+    local function setDecided(e, val, changes)
+        if getE(e) ~= nil then return getE(e) == val end
+        setE(e, val)
+        decided_count = decided_count + 1
+        changes[#changes+1] = e
+        return true
+    end
+
+    local function undo(changes)
+        for _, e in ipairs(changes) do
+            setE(e, nil)
+            decided_count = decided_count - 1
+        end
+    end
+
+    local function propagate(changes)
+        local progressed = true
+        while progressed do
+            progressed = false
+            for r = 1, n do
+                for c = 1, n do
+                    local clue = clues[r][c]
+                    if clue and clue >= 0 then
+                        local es = cellEdges(r, c)
+                        local have, undecided = 0, {}
+                        for _, e in ipairs(es) do
+                            local val = getE(e)
+                            if val == true then have = have + 1
+                            elseif val == nil then undecided[#undecided+1] = e end
+                        end
+                        if have > clue or have + #undecided < clue then return false end
+                        if #undecided > 0 then
+                            if have == clue then
+                                for _, e in ipairs(undecided) do
+                                    if not setDecided(e, false, changes) then return false end
+                                end
+                                progressed = true
+                            elseif have + #undecided == clue then
+                                for _, e in ipairs(undecided) do
+                                    if not setDecided(e, true, changes) then return false end
+                                end
+                                progressed = true
+                            end
+                        end
+                    end
+                end
+            end
+            for r = 1, n+1 do
+                for c = 1, n+1 do
+                    local es = vertexEdges(r, c)
+                    local have, undecided = 0, {}
+                    for _, e in ipairs(es) do
+                        local val = getE(e)
+                        if val == true then have = have + 1
+                        elseif val == nil then undecided[#undecided+1] = e end
+                    end
+                    if have > 2 then return false end
+                    if #undecided == 0 and have ~= 0 and have ~= 2 then return false end
+                    if #undecided == 1 then
+                        if have == 0 then
+                            if not setDecided(undecided[1], false, changes) then return false end
+                            progressed = true
+                        elseif have == 1 then
+                            if not setDecided(undecided[1], true, changes) then return false end
+                            progressed = true
+                        end
+                    end
+                end
+            end
+        end
+        return true
+    end
+
+    local function search()
+        if solutions >= limit or exhausted then return end
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return end
+
+        local changes = {}
+        if not propagate(changes) then
+            undo(changes)
+            return
+        end
+
+        if decided_count == num_edges then
+            if isSingleLoopFinal() then solutions = solutions + 1 end
+            undo(changes)
+            return
+        end
+
+        local pick
+        for _, e in ipairs(edge_list) do
+            if getE(e) == nil then pick = e; break end
+        end
+        if not pick then
+            undo(changes)
+            return
+        end
+
+        for _, val in ipairs({ false, true }) do
+            local branch_changes = {}
+            if setDecided(pick, val, branch_changes) then
+                search()
+            end
+            undo(branch_changes)
+            if solutions >= limit or exhausted then break end
+        end
+        undo(changes)
+    end
+
+    search()
+    return solutions, exhausted
+end
+
+local function uniquenessNodeBudget(n)
+    if n <= 10 then return 100000 end
+    if n <= 15 then return 60000 end
+    return 15000
+end
+
+local REVEAL_LEVELS = { 1.0, 1.15, 1.3, 100.0 } -- multipliers on CLUE_KEEP ratio (last guarantees full reveal)
+
+-- ---------------------------------------------------------------------------
 -- SlitherlinkBoard
 -- ---------------------------------------------------------------------------
 
@@ -205,17 +436,70 @@ function SlitherlinkBoard:new(opts)
     }, self)
 end
 
+-- Reveals clues from the full (every-cell) clue grid at the given keep
+-- ratio. Repicking which cells reveal their clue for the SAME loop shape
+-- is much cheaper than regenerating the loop, and a higher ratio can only
+-- add constraints -- same lever as shikaku/lightup/tapa.
+local function pickClues(full_clues, n, keep)
+    local clues = emptyGrid(n, n, -1)
+    for r = 1, n do
+        for c = 1, n do
+            if math.random() <= keep then
+                clues[r][c] = full_clues[r][c]
+            end
+        end
+    end
+    return clues
+end
+
+-- Win-check is a literal comparison to the stored solution -- there's no
+-- "given" mask beyond which clues get revealed, so like hitori/lightup/
+-- tapa this generates+verifies whole candidates instead of digging.
+-- Measured pre-fix: real, graduated ambiguity (worse at hard/larger n --
+-- n=10/hard only 1/10 unique). Escalates the clue-keep ratio in bounded
+-- steps (nominal, then higher, then a guaranteed full reveal) for a given
+-- loop shape before drawing a fresh one, same shape as the hitori/lightup/
+-- tapa fix -- a plain "retry the same nominal ratio" loop was already
+-- shown not to help in this audit when the nominal ratio is itself often
+-- ambiguous.
 function SlitherlinkBoard:generate(difficulty)
     self.difficulty = difficulty or self.difficulty
     self.reveal     = false
     self.undo:clear()
 
     local n = self.n
-    local h_sol, v_sol, clues
+    local base_keep = CLUE_KEEP[self.difficulty] or CLUE_KEEP.easy
+    local node_budget = uniquenessNodeBudget(n)
 
-    for _ = 1, 100 do
-        h_sol, v_sol, clues = tryGenerate(n)
+    local h_sol, v_sol, clues
+    local best_h_sol, best_v_sol, best_clues
+
+    for _ = 1, 40 do
         if h_sol then break end
+        local cand_h, cand_v, full_clues = tryGenerate(n)
+        if cand_h then
+            for _, mult in ipairs(REVEAL_LEVELS) do
+                if h_sol then break end
+                local keep = math.min(1.0, base_keep * mult)
+                local sub_attempts = keep >= 1.0 and 1 or 2
+                for _ = 1, sub_attempts do
+                    local candidate_clues = pickClues(full_clues, n, keep)
+
+                    if not best_h_sol then
+                        best_h_sol, best_v_sol, best_clues = cand_h, cand_v, candidate_clues
+                    end
+
+                    local solutions, exhausted = countSolutions(candidate_clues, n, 2, node_budget)
+                    if solutions == 1 and not exhausted then
+                        h_sol, v_sol, clues = cand_h, cand_v, candidate_clues
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if not h_sol then
+        h_sol, v_sol, clues = best_h_sol, best_v_sol, best_clues
     end
 
     if not h_sol then
@@ -234,14 +518,6 @@ function SlitherlinkBoard:generate(difficulty)
                 if v_sol[r][c+1] then cnt = cnt + 1 end
                 clues[r][c] = cnt
             end
-        end
-    end
-
-    -- Remove some clues based on difficulty
-    local keep = CLUE_KEEP[self.difficulty] or CLUE_KEEP.easy
-    for r = 1, n do
-        for c = 1, n do
-            if math.random() > keep then clues[r][c] = -1 end
         end
     end
 
