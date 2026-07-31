@@ -22,7 +22,7 @@ local C_BG      = Blitbuffer.COLOR_WHITE
 local C_DOT     = Blitbuffer.COLOR_BLACK
 local C_LINE    = Blitbuffer.COLOR_BLACK
 local C_CROSS   = Blitbuffer.COLOR_GRAY_4
-local C_WRONG   = Blitbuffer.COLOR_GRAY_A
+local C_WRONG   = Blitbuffer.COLOR_GRAY
 local C_NUM     = Blitbuffer.COLOR_BLACK
 local C_NUM_SOL = Blitbuffer.COLOR_GRAY_4
 
