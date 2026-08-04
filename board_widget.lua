@@ -224,7 +224,7 @@ function SlitherlinkBoardWidget:paintTo(bb, x, y)
                 local color = show and C_NUM_SOL or C_NUM
                 local m     = RenderText:sizeUtf8Text(0, cell, self.num_face, text, true, false)
                 local tx    = cx2 - math.floor(m.x / 2)
-                local ty    = cy2 + math.floor((m.y_top - m.y_bottom) / 2) - m.y_top
+                local ty    = cy2 + math.floor((m.y_top - m.y_bottom) / 2)
                 RenderText:renderUtf8Text(bb, tx, ty, self.num_face, text, true, false, color)
             end
         end
