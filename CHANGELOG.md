@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-09-30
+
+### Added
+- **Hint** button. Two taps: the first names the segment that is about to give -- horizontal or vertical, since the two edge grids are independent -- the second draws it. Crossing an edge out is optional bookkeeping, so only missing segments are offered. A move that contradicts the solution is always
+  reported before a fresh one is revealed.
+
+
 ## [1.1.10] - 2026-07-31
 
 ### Fixed
