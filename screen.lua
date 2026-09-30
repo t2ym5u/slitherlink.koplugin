@@ -63,6 +63,22 @@ Appuyez sur un bord de grille pour cycler : Inconnu → Ligne → Croix → Inco
 
 local SlitherlinkScreen = ScreenBase:extend{}
 
+-- The unit here is an edge, and there are two independent edge grids, so
+-- "R3C4" alone would not say which. step.tag is "h" or "v".
+function SlitherlinkScreen:describeHintStep(step, level)
+    local orient = (step.tag == "h") and _("horizontal") or _("vertical")
+    if level == 1 then
+        return step.kind == "mistake"
+            and T(_("The %1 edge at R%2C%3 is wrong. Tap Hint again to clear it."),
+                  orient, step.r, step.c)
+            or  T(_("The %1 edge at R%2C%3 can be worked out. Tap Hint again to draw it."),
+                  orient, step.r, step.c)
+    end
+    return step.kind == "mistake"
+        and T(_("Cleared the %1 edge at R%2C%3."), orient, step.r, step.c)
+        or  T(_("Drew the %1 edge at R%2C%3."), orient, step.r, step.c)
+end
+
 function SlitherlinkScreen:init()
     local state = self.plugin:loadState()
     local n     = self.plugin:getSetting("grid_n", 5)
@@ -119,6 +135,7 @@ function SlitherlinkScreen:buildLayout()
         buttons = {
             {
                 { text = _("Check"), callback = function() self:onCheck() end },
+                { text = _("Hint"), callback = function() self:onHint() end },
                 { id = "undo_button", text = _("Undo"),
                   callback = function() self:onUndo() end },
             },

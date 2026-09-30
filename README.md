@@ -21,6 +21,7 @@ with no branches or crossings.
 ## Features
 
 - **Multiple grid sizes** — 5×5, 10×10, 15×15, 20×20
+- **Hint** — two taps, working in an edge rather than cells: the first points at it, the second acts on it
 - **Three difficulty levels** — Easy, Medium, Hard
 - **Edge states** — unknown, line (part of the loop), cross (confirmed not used)
 - **Loop validation** — detects closed sub-loops before the puzzle is complete
