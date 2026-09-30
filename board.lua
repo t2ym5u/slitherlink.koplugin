@@ -701,6 +701,67 @@ local function copyVBool(src, n)
     return g
 end
 
+-- ---------------------------------------------------------------------------
+-- Hints
+--
+-- The unit here is an edge, not a cell, so this cannot use the shared
+-- Hint.install helper: a slitherlink position has two independent edge grids
+-- and "R3C4" alone would not say which. Each step therefore carries its own
+-- wording and a `tag` of "h" or "v", which is what lets ScreenBase tell the
+-- two apart when deciding whether a second tap means "now do it".
+--
+-- Crossing an edge out is optional bookkeeping -- only drawn segments decide
+-- the loop -- so a cross where the solution has nothing is left alone, and
+-- only a missing segment is ever offered.
+local function slitherlinkScan(grid_user, grid_sol, rows, cols)
+    local mistake, blank
+    for r = 1, rows do
+        for c = 1, cols do
+            local u, sol = grid_user[r][c], grid_sol[r][c]
+            if (u == EDGE_LINE and not sol) or (u == EDGE_CROSS and sol) then
+                mistake = mistake or { r = r, c = c }
+            elseif u == EDGE_UNKNOWN and sol then
+                blank = blank or { r = r, c = c }
+            end
+        end
+    end
+    return mistake, blank
+end
+
+function SlitherlinkBoard:findHint()
+    if self.reveal then return nil, "stuck" end
+    local n = self.n
+    local mh, bh = slitherlinkScan(self.h_user, self.h_sol, n + 1, n)
+    local mv, bv = slitherlinkScan(self.v_user, self.v_sol, n, n + 1)
+
+    local function step(kind, tag, cell)
+        return { kind = kind, tag = tag, r = cell.r, c = cell.c }
+    end
+
+    -- A wrong segment always comes before a fresh one: building on it wastes
+    -- the player's work.
+    if mh then return step("mistake", "h", mh) end
+    if mv then return step("mistake", "v", mv) end
+    if bh then return step("fill", "h", bh) end
+    if bv then return step("fill", "v", bv) end
+    return nil, "complete"
+end
+
+function SlitherlinkBoard:applyHint(step)
+    if not step then return false end
+    local state = (step.kind == "mistake") and EDGE_UNKNOWN or EDGE_LINE
+    if step.tag == "h" then return self:setHEdge(step.r, step.c, state) ~= false end
+    return self:setVEdge(step.r, step.c, state) ~= false
+end
+
+function SlitherlinkBoard:getHintsUsed()
+    return self.hints_used or 0
+end
+
+function SlitherlinkBoard:noteHintUsed()
+    self.hints_used = (self.hints_used or 0) + 1
+end
+
 function SlitherlinkBoard:serialize()
     local n = self.n
     local clues_out = {}
