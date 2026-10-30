@@ -1,5 +1,5 @@
 return {
-    ["%1\xC3\x97%2 \xC2\xB7 %3 \xC2\xB7 Edges left: %4"] = { fr = "%1×%2 · %3 · Arêtes restantes : %4", es = "%1×%2 · %3 · Aristas restantes: %4", de = "%1×%2 · %3 · Verbleibende Kanten: %4" },
+    ["Edges left: %1"] = { fr = "Arêtes restantes : %1", es = "Aristas restantes: %1", de = "Verbleibende Kanten: %1" },
     ["Congratulations! Loop complete!"]       = { fr = "Félicitations ! Boucle complète !", es = "¡Enhorabuena! ¡Bucle completo!", de = "Glückwunsch! Schleife vollständig!" },
     ["No clue violations so far."]           = { fr = "Aucune violation d'indice pour l'instant.", es = "Sin infracciones de pistas por ahora.", de = "Bisher keine Hinweisverletzungen." },
     ["Check: %1 clue(s) exceeded."]          = { fr = "Vérification : %1 indice(s) dépassé(s).", es = "Comprobación: %1 pista(s) excedida(s).", de = "Prüfung: %1 Hinweis(e) überschritten." },

@@ -34,6 +34,7 @@ local C_NUM_SOL = Blitbuffer.COLOR_GRAY_4
 local SlitherlinkBoardWidget = InputContainer:extend{
     board      = nil,
     size_ratio = 0.82,
+    max_size   = nil,   -- side in pixels; overrides size_ratio when set
     onEdgeAction = nil,  -- function(kind, r, c, is_hold)
 }
 
@@ -44,13 +45,26 @@ function SlitherlinkBoardWidget:init()
     local Screen = require("device").screen
     local min_dim = math.min(Screen:getWidth(), Screen:getHeight())
     self.size     = math.floor(min_dim * (self.size_ratio or 0.82))
+    if self.max_size then
+        self.size = math.max(n, math.floor(self.max_size))
+    end
     self.cell     = self.size / n
     self.dot_r    = math.max(2, math.floor(self.cell * 0.06))
     self.line_w   = math.max(2, math.floor(self.cell * 0.08))
     self.cross_len = math.max(3, math.floor(self.cell * 0.20))
 
-    -- Font for clue numbers
-    local fsize = math.max(10, math.floor(self.cell * 0.45))
+    -- Font for clue numbers: the largest whose digit stays well clear of the
+    -- cell's edges, where lines and crosses are drawn. Font:getFace scales
+    -- its size by DPI, so a size derived from pixels is divided back first;
+    -- the fit is then measured, not assumed.
+    local scale = Screen:scaleBySize(1000) / 1000
+    local fit   = self.cell * 0.45
+    local fsize = math.max(6, math.floor(self.cell * 0.6 / scale))
+    while fsize > 6 do
+        local m = RenderText:sizeUtf8Text(0, math.huge, Font:getFace("cfont", fsize), "3", true, false)
+        if m.x <= fit and (m.y_top + m.y_bottom) <= fit then break end
+        fsize = fsize - 1
+    end
     self.num_face = Font:getFace("cfont", fsize)
 
     self.dimen      = Geom:new{ w = self.size, h = self.size }
