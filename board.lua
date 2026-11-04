@@ -167,228 +167,272 @@ end
 -- solution (not rule-based). Uniqueness means: given the revealed clue
 -- numbers, is there only one edge assignment forming a single simple loop
 -- (every dot has degree 0 or 2, no separate sub-loops) consistent with
--- them? Backtracking over edges (line/not-line) with two propagation
--- rules: clue forcing (a cell's decided-line-count hitting its clue value
--- forces the rest) and vertex degree forcing (a dot's final degree must
--- be 0 or 2, so its last undecided incident edge is forced once that's
--- the only way to avoid ending at degree 1). Full validation (incl. no
--- separate sub-loops) is only checked once every edge is decided -- an
--- earlier attempt at incremental "no premature sub-loop" pruning via
--- union-find was unsound (compared against the count of ALL decided
--- edges, line or not, which is essentially never reached until long
--- after the real loop closes, since unrelated not-line edges elsewhere
--- are usually still undecided -- it rejected the true solution's own
--- closing edge nearly always, caught via the standard sanity check).
--- Dropped in favor of this simpler, definitely-sound version; the clue
--- and vertex propagation alone turned out to be strong enough to stay
--- fast (sub-100ms even at n=20) without it.
+-- them?
+--
+-- Backtracking over edges (0 undecided, 1 line, 2 cross) with queue-driven
+-- propagation; every rule only forces what all solutions extending the
+-- current partial grid share, so solutions are counted exactly:
+--   - clue: a cell's line count reaching its clue crosses the rest; when
+--     only as many undecided edges are left as lines missing, they're all
+--     lines.
+--   - dot: a dot never has more than 2 lines; with 2 the rest are crossed;
+--     its last undecided edge is forced so it doesn't end at degree 1.
+--   - sub-loops: each line path's two ends know each other (mate[], kept
+--     on the trail so backtracking restores it). Joining a path's own two
+--     ends closes a loop, which is only allowed when every line so far
+--     belongs to that path; after that no new line may appear. An edge
+--     that would close a loop too early is crossed as soon as it's seen.
+-- The search branches on an edge at a path end (one of its free edges
+-- must be a line), so the loop is followed rather than guessed edge by
+-- edge in raster order. node_budget counts search nodes, so a seed gives
+-- the same verdict on every device.
+-- 1.5.0: replaces a raster-order backtracker that only checked for
+-- sub-loops once every edge was decided (up to 11 s at 20x20 on a
+-- desktop, minutes on an e-reader).
 -- ---------------------------------------------------------------------------
 
 local function countSolutions(clues, n, limit, node_budget)
-    local h = {}
-    local v = {}
-    for r = 1, n+1 do h[r] = {} end
-    for r = 1, n do v[r] = {} end
-
-    local edge_list = {}
-    for r = 1, n+1 do for c = 1, n do edge_list[#edge_list+1] = { kind="h", r=r, c=c } end end
-    for r = 1, n do for c = 1, n+1 do edge_list[#edge_list+1] = { kind="v", r=r, c=c } end end
-    local num_edges = #edge_list
-
-    local function getE(e)
-        if e.kind == "h" then return h[e.r][e.c] else return v[e.r][e.c] end
+    local W = n + 1                     -- dots per row
+    local HN = (n + 1) * n              -- horizontal edges come first
+    local E = HN + n * (n + 1)
+    local ea, eb, ecells = {}, {}, {}   -- edge -> its two dots, its cells
+    local vedges, cedges = {}, {}       -- dot -> edges, cell -> edges
+    for i = 1, W * W do vedges[i] = {} end
+    for i = 1, n * n do cedges[i] = {} end
+    local function addEdge(e, a, b)
+        ea[e], eb[e], ecells[e] = a, b, {}
+        local va, vb = vedges[a], vedges[b]
+        va[#va + 1] = e; vb[#vb + 1] = e
     end
-    local function setE(e, val)
-        if e.kind == "h" then h[e.r][e.c] = val else v[e.r][e.c] = val end
+    local function addCell(e, r, c)
+        if r >= 1 and r <= n and c >= 1 and c <= n then
+            local cell = (r - 1) * n + c
+            local ec = ecells[e]
+            ec[#ec + 1] = cell
+            local ce = cedges[cell]
+            ce[#ce + 1] = e
+        end
+    end
+    for r = 1, n + 1 do for c = 1, n do       -- h[r][c]: dot (r,c)-(r,c+1)
+        local e = (r - 1) * n + c
+        addEdge(e, (r - 1) * W + c, (r - 1) * W + c + 1)
+        addCell(e, r - 1, c); addCell(e, r, c)
+    end end
+    for r = 1, n do for c = 1, n + 1 do       -- v[r][c]: dot (r,c)-(r+1,c)
+        local e = HN + (r - 1) * (n + 1) + c
+        addEdge(e, (r - 1) * W + c, r * W + c)
+        addCell(e, r, c - 1); addCell(e, r, c)
+    end end
+    local clue = {}
+    for r = 1, n do for c = 1, n do
+        local k = clues[r][c]
+        clue[(r - 1) * n + c] = (k and k >= 0) and k or nil
+    end end
+    local function edgeBetween(a, b)
+        for _, e in ipairs(vedges[a]) do
+            if ea[e] == b or eb[e] == b then return e end
+        end
     end
 
-    local function cellEdges(r, c)
-        return {
-            { kind="h", r=r,   c=c },
-            { kind="h", r=r+1, c=c },
-            { kind="v", r=r,   c=c },
-            { kind="v", r=r,   c=c+1 },
-        }
+    local state, vline, vund, cline, cund = {}, {}, {}, {}, {}
+    for e = 1, E do state[e] = 0 end
+    for i = 1, W * W do vline[i] = 0; vund[i] = #vedges[i] end
+    for i = 1, n * n do cline[i] = 0; cund[i] = 4 end
+    local mate, plen = {}, {}           -- valid at path ends only
+    for i = 1, W * W do mate[i] = i; plen[i] = 0 end
+    local lines, undecided, closed = 0, E, false
+
+    -- Trail entries: an edge id, or a negated dot id followed by the dot's
+    -- previous mate and plen (restored in reverse order).
+    local trail, tn = {}, 0
+    local queue, qh, qt = {}, 1, 0      -- dots (positive) / cells (negated)
+
+    local function saveDot(d)
+        trail[tn + 1] = mate[d]; trail[tn + 2] = plen[d]; trail[tn + 3] = -d
+        tn = tn + 3
     end
-
-    local function vertexEdges(r, c)
-        local es = {}
-        if c <= n   then es[#es+1] = { kind="h", r=r,   c=c   } end
-        if c > 1    then es[#es+1] = { kind="h", r=r,   c=c-1 } end
-        if r <= n   then es[#es+1] = { kind="v", r=r,   c=c   } end
-        if r > 1    then es[#es+1] = { kind="v", r=r-1, c=c   } end
-        return es
-    end
-
-    local decided_count = 0
-    local solutions, nodes, exhausted = 0, 0, false
-
-    local function isSingleLoopFinal()
-        local total = 0
-        for r = 1, n+1 do for c = 1, n do if h[r][c] then total = total + 1 end end end
-        for r = 1, n do for c = 1, n+1 do if v[r][c] then total = total + 1 end end end
-        if total == 0 then return false end
-        for r = 1, n+1 do
-            for c = 1, n+1 do
-                local deg = 0
-                if c <= n and h[r][c] then deg = deg + 1 end
-                if c > 1 and h[r][c-1] then deg = deg + 1 end
-                if r <= n and v[r][c] then deg = deg + 1 end
-                if r > 1 and v[r-1][c] then deg = deg + 1 end
-                if deg ~= 0 and deg ~= 2 then return false end
+    local function undo(mark)
+        while tn > mark do
+            local x = trail[tn]
+            if x < 0 then
+                local d = -x
+                plen[d] = trail[tn - 1]; mate[d] = trail[tn - 2]
+                tn = tn - 3
+            else
+                local e = x
+                local a, b = ea[e], eb[e]
+                vund[a] = vund[a] + 1; vund[b] = vund[b] + 1
+                for _, cell in ipairs(ecells[e]) do cund[cell] = cund[cell] + 1 end
+                if state[e] == 1 then
+                    vline[a] = vline[a] - 1; vline[b] = vline[b] - 1
+                    for _, cell in ipairs(ecells[e]) do cline[cell] = cline[cell] - 1 end
+                    lines = lines - 1
+                    if closed then closed = false end  -- only the closing edge can be undone while closed
+                end
+                state[e] = 0
+                undecided = undecided + 1
+                tn = tn - 1
             end
         end
-        local start_r, start_c
-        for r = 1, n+1 do for c = 1, n do if h[r][c] then start_r, start_c = r, c; goto found end end end
-        ::found::
-        if not start_r then return false end
-        local cur_r, cur_c = start_r, start_c
-        local prv_r, prv_c = start_r, start_c + 1
-        local steps = 0
-        repeat
-            local nx, ny
-            if cur_c <= n and h[cur_r][cur_c] then
-                local nr, nc = cur_r, cur_c+1
-                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
-            end
-            if not nx and cur_c > 1 and h[cur_r][cur_c-1] then
-                local nr, nc = cur_r, cur_c-1
-                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
-            end
-            if not nx and cur_r <= n and v[cur_r][cur_c] then
-                local nr, nc = cur_r+1, cur_c
-                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
-            end
-            if not nx and cur_r > 1 and v[cur_r-1][cur_c] then
-                local nr, nc = cur_r-1, cur_c
-                if nr ~= prv_r or nc ~= prv_c then nx, ny = nr, nc end
-            end
-            if not nx then return false end
-            prv_r, prv_c = cur_r, cur_c
-            cur_r, cur_c = nx, ny
-            steps = steps + 1
-        until (cur_r == start_r and cur_c == start_c)
-        return steps == total
     end
+    -- "closed" is restored by undo(): the only line set while closed would be
+    -- a contradiction (rejected before it's recorded), so the most recent
+    -- line edge on the trail when closed is the one that closed the loop.
 
-    local function setDecided(e, val, changes)
-        if getE(e) ~= nil then return getE(e) == val end
-        setE(e, val)
-        decided_count = decided_count + 1
-        changes[#changes+1] = e
+    -- Returns false on a contradiction.
+    local function set(e, val)
+        local s = state[e]
+        if s ~= 0 then return s == val end
+        local a, b = ea[e], eb[e]
+        if val == 1 then
+            if closed or vline[a] >= 2 or vline[b] >= 2 then return false end
+            local ea_end = vline[a] == 0 and a or mate[a]
+            local eb_end = vline[b] == 0 and b or mate[b]
+            if ea_end == b then
+                -- a and b are the two ends of one path: this closes a loop,
+                -- which must then be the whole solution.
+                if plen[a] ~= lines then return false end
+                closed = true
+            else
+                local len = (vline[a] == 0 and 0 or plen[a]) + (vline[b] == 0 and 0 or plen[b]) + 1
+                saveDot(ea_end); saveDot(eb_end)
+                mate[ea_end], mate[eb_end] = eb_end, ea_end
+                plen[ea_end], plen[eb_end] = len, len
+                -- the new ends may now face each other across one edge
+                qt = qt + 1; queue[qt] = ea_end
+                qt = qt + 1; queue[qt] = eb_end
+            end
+            vline[a] = vline[a] + 1; vline[b] = vline[b] + 1
+            for _, cell in ipairs(ecells[e]) do cline[cell] = cline[cell] + 1 end
+            lines = lines + 1
+        end
+        state[e] = val
+        vund[a] = vund[a] - 1; vund[b] = vund[b] - 1
+        for _, cell in ipairs(ecells[e]) do cund[cell] = cund[cell] - 1 end
+        undecided = undecided - 1
+        tn = tn + 1; trail[tn] = e
+        qt = qt + 1; queue[qt] = a
+        qt = qt + 1; queue[qt] = b
+        for _, cell in ipairs(ecells[e]) do qt = qt + 1; queue[qt] = -cell end
         return true
     end
 
-    local function undo(changes)
-        for _, e in ipairs(changes) do
-            setE(e, nil)
-            decided_count = decided_count - 1
+    local function setAll(list, val)
+        for _, e in ipairs(list) do
+            if state[e] == 0 and not set(e, val) then return false end
         end
+        return true
     end
 
-    local function propagate(changes)
-        local progressed = true
-        while progressed do
-            progressed = false
-            for r = 1, n do
-                for c = 1, n do
-                    local clue = clues[r][c]
-                    if clue and clue >= 0 then
-                        local es = cellEdges(r, c)
-                        local have, undecided = 0, {}
-                        for _, e in ipairs(es) do
-                            local val = getE(e)
-                            if val == true then have = have + 1
-                            elseif val == nil then undecided[#undecided+1] = e end
+    local function propagate()
+        while true do
+            while qh <= qt do
+                local x = queue[qh]; qh = qh + 1
+                if x > 0 then
+                    local d = x
+                    local l, u = vline[d], vund[d]
+                    if l > 2 or (l == 1 and u == 0) then return false end
+                    if u > 0 then
+                        if l == 2 then
+                            if not setAll(vedges[d], 2) then return false end
+                        elseif u == 1 then
+                            if not setAll(vedges[d], l == 1 and 1 or 2) then return false end
+                        elseif l == 1 then
+                            -- A path end next to its own other end: that edge
+                            -- would close a loop, fine only if it'd hold every line.
+                            local m = mate[d]
+                            if m ~= d and plen[d] ~= lines then
+                                local e = edgeBetween(d, m)
+                                if e and state[e] == 0 and not set(e, 2) then return false end
+                            end
                         end
-                        if have > clue or have + #undecided < clue then return false end
-                        if #undecided > 0 then
-                            if have == clue then
-                                for _, e in ipairs(undecided) do
-                                    if not setDecided(e, false, changes) then return false end
-                                end
-                                progressed = true
-                            elseif have + #undecided == clue then
-                                for _, e in ipairs(undecided) do
-                                    if not setDecided(e, true, changes) then return false end
-                                end
-                                progressed = true
+                    end
+                else
+                    local cell = -x
+                    local k = clue[cell]
+                    if k then
+                        local l, u = cline[cell], cund[cell]
+                        if l > k or l + u < k then return false end
+                        if u > 0 then
+                            if l == k then
+                                if not setAll(cedges[cell], 2) then return false end
+                            elseif l + u == k then
+                                if not setAll(cedges[cell], 1) then return false end
                             end
                         end
                     end
                 end
             end
-            for r = 1, n+1 do
-                for c = 1, n+1 do
-                    local es = vertexEdges(r, c)
-                    local have, undecided = 0, {}
-                    for _, e in ipairs(es) do
-                        local val = getE(e)
-                        if val == true then have = have + 1
-                        elseif val == nil then undecided[#undecided+1] = e end
-                    end
-                    if have > 2 then return false end
-                    if #undecided == 0 and have ~= 0 and have ~= 2 then return false end
-                    if #undecided == 1 then
-                        if have == 0 then
-                            if not setDecided(undecided[1], false, changes) then return false end
-                            progressed = true
-                        elseif have == 1 then
-                            if not setDecided(undecided[1], true, changes) then return false end
-                            progressed = true
-                        end
-                    end
-                end
+            -- Once the loop is closed, every edge left is a cross.
+            if not (closed and undecided > 0) then break end
+            for e = 1, E do
+                if state[e] == 0 and not set(e, 2) then return false end
             end
         end
         return true
     end
 
-    local function search()
-        if solutions >= limit or exhausted then return end
-        nodes = nodes + 1
-        if nodes > node_budget then exhausted = true; return end
-
-        local changes = {}
-        if not propagate(changes) then
-            undo(changes)
-            return
-        end
-
-        if decided_count == num_edges then
-            if isSingleLoopFinal() then solutions = solutions + 1 end
-            undo(changes)
-            return
-        end
-
-        local pick
-        for _, e in ipairs(edge_list) do
-            if getE(e) == nil then pick = e; break end
-        end
-        if not pick then
-            undo(changes)
-            return
-        end
-
-        for _, val in ipairs({ false, true }) do
-            local branch_changes = {}
-            if setDecided(pick, val, branch_changes) then
-                search()
+    local function pickEdge()
+        local best, best_u = nil, 99
+        for d = 1, W * W do
+            if vline[d] == 1 and vund[d] > 0 and vund[d] < best_u then
+                best, best_u = d, vund[d]
+                if best_u == 2 then break end
             end
-            undo(branch_changes)
-            if solutions >= limit or exhausted then break end
         end
-        undo(changes)
+        if best then
+            for _, e in ipairs(vedges[best]) do
+                if state[e] == 0 then return e end
+            end
+        end
+        -- No path yet: start next to the most demanding clue.
+        local cbest, ck = nil, -1
+        for cell = 1, n * n do
+            local k = clue[cell]
+            if k and cund[cell] > 0 and k - cline[cell] > ck then cbest, ck = cell, k - cline[cell] end
+        end
+        if cbest then
+            for _, e in ipairs(cedges[cbest]) do
+                if state[e] == 0 then return e end
+            end
+        end
+        for e = 1, E do if state[e] == 0 then return e end end
     end
 
+    local solutions, nodes, exhausted = 0, 0, false
+    local function search()
+        nodes = nodes + 1
+        if nodes > node_budget then exhausted = true; return end
+        if not propagate() then qh, qt = 1, 0; return end
+        qh, qt = 1, 0
+        if undecided == 0 then
+            if closed then solutions = solutions + 1 end
+            return
+        end
+        local e = pickEdge()
+        for val = 1, 2 do
+            local mark = tn
+            if set(e, val) then search() end
+            qh, qt = 1, 0
+            undo(mark)
+            if solutions >= limit or exhausted then return end
+        end
+    end
+    -- Every clue is checked once up front (a 0 crosses its edges, ...).
+    for cell = 1, n * n do
+        if clue[cell] then qt = qt + 1; queue[qt] = -cell end
+    end
     search()
-    return solutions, exhausted
+    return solutions, exhausted, nodes
 end
 
-local function uniquenessNodeBudget(n)
-    if n <= 10 then return 100000 end
-    if n <= 15 then return 60000 end
-    return 15000
+-- Search nodes allowed per uniqueness check; running out counts as "not
+-- unique". With the propagation above a unique clue set is proved in under
+-- 50 nodes even at 20x20 (measured on 600 puzzles), so this only cuts
+-- short the rare sparse non-unique set that wanders before its second
+-- solution turns up.
+local function uniquenessNodeBudget(n) -- luacheck: ignore n
+    return 2000
 end
 
 local REVEAL_LEVELS = { 1.0, 1.15, 1.3, 100.0 } -- multipliers on CLUE_KEEP ratio (last guarantees full reveal)
@@ -863,5 +907,8 @@ end
 SlitherlinkBoard.EDGE_UNKNOWN = EDGE_UNKNOWN
 SlitherlinkBoard.EDGE_LINE    = EDGE_LINE
 SlitherlinkBoard.EDGE_CROSS   = EDGE_CROSS
+
+-- exposed for the specs
+SlitherlinkBoard.countSolutions = countSolutions
 
 return SlitherlinkBoard

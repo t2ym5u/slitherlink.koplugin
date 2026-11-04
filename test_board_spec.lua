@@ -213,4 +213,37 @@ describe("SlitherlinkBoard", function()
             assert.is_false(b:load({}))
         end)
     end)
+    describe("uniqueness check (1.5.0)", function()
+        it("counts every simple loop of an empty 2x2 grid", function()
+            -- 4 single cells, 4 dominoes, 4 L-trominoes and the square
+            local none = { { -1, -1 }, { -1, -1 } }
+            assert.are.equal(13, (Board.countSolutions(none, 2, 100, 1e6)))
+            -- a 3 in a corner keeps the 2 dominoes and 2 L-trominoes
+            -- that wrap around it on three sides
+            local three = { { 3, -1 }, { -1, -1 } }
+            assert.are.equal(4, (Board.countSolutions(three, 2, 100, 1e6)))
+        end)
+
+        it("every generated puzzle is unique, and generation is fast", function()
+            for _, n in ipairs({ 5, 10, 15, 20 }) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 8 do
+                        math.randomseed(seed * 7919 + n)
+                        local t0 = os.clock()
+                        local b = Board:new{ n = n }
+                        b:generate(diff)
+                        worst = math.max(worst, os.clock() - t0)
+                        local solutions, exhausted = Board.countSolutions(b.clues, n, 2, 1e6)
+                        assert.is_false(exhausted)
+                        assert.are.equal(1, solutions,
+                            ("n=%d diff=%s seed=%d: not unique"):format(n, diff, seed))
+                    end
+                    -- ~15 ms worst on a desktop (20x20 hard took up to 11 s
+                    -- before 1.5.0); generous for slow CI.
+                    assert.is_true(worst < 1.0, ("n=%d diff=%s took %.2fs"):format(n, diff, worst))
+                end
+            end
+        end)
+    end)
 end)
