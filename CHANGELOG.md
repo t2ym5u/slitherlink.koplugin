@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Much faster puzzle generation: a 20×20 Hard grid took up to 11 s on a
+  desktop (several minutes on an e-reader); every size now takes a few
+  hundredths of a second at most. The uniqueness check follows the loop
+  and rejects a loop that closes too early right away, instead of only
+  checking for stray loops once every edge was decided. Same puzzles as
+  before for the same seed.
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed
