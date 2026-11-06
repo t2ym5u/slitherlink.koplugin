@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-05
+
+### Changed
+- The three levels now really differ, and no puzzle needs trial and error.
+  Each puzzle is solved by a logic solver before you see it:
+  - **Easy**: the basic rules alone (a number's count, two lines per dot)
+    solve it.
+  - **Medium**: also needs a few patterns (a 3 or a 1 in a corner, two 3s
+    side by side, ...) or loop deductions.
+  - **Hard**: fewer numbers (about 42–48 % of the cells, down from 65–70 %),
+    and many such steps, including the inside/outside reasoning.
+  Before, a level only set how many numbers were shown: Easy was solved by
+  the basic rules alone, some Hard puzzles could only be finished by
+  guessing, and a 20×20 Hard grid sometimes showed every number.
+- Where the solver gets stuck, the generator shows the number there,
+  instead of more numbers at random.
+- Large grids show a progress bar while a puzzle is being built (only if
+  it takes long enough to notice).
+- Faster generation: the logic solver now runs without LuaJIT's compiler,
+  which kept recompiling it for every new solver it made. Worst case over
+  50 seeds on a desktop: 20×20 Hard ~50 ms → ~33 ms, 10×10 Hard ~40 ms →
+  ~23 ms. Same puzzles for the same seed.
+- The Daily Challenge puzzle changes once with this version.
+
 ## [1.5.3] - 2026-11-04
 
 ### Fixed
