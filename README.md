@@ -22,7 +22,13 @@ with no branches or crossings.
 
 - **Multiple grid sizes** — 5×5, 10×10, 15×15, 20×20
 - **Hint** — two taps, working in an edge rather than cells: the first points at it, the second acts on it
-- **Three difficulty levels** — Easy, Medium, Hard
+- **Three difficulty levels**, every puzzle checked by a logic solver: one
+  solution, and never any need to guess
+  - *Easy*: the basic rules are enough (a number's count, two lines per dot)
+  - *Medium*: a few patterns (a 3 or a 1 in a corner, two 3s side by side…)
+    or loop deductions
+  - *Hard*: fewer numbers, and many such steps, including inside/outside
+    reasoning
 - **Edge states** — unknown, line (part of the loop), cross (confirmed not used)
 - **Loop validation** — detects closed sub-loops before the puzzle is complete
 - **Check** — highlights edges that contradict a numbered clue
